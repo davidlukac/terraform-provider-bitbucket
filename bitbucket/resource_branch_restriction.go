@@ -330,23 +330,46 @@ func flattenBranchRestrictionUsers(users []bitbucket.Account) []string {
 	return flattened
 }
 
+// groupOwnerIdentifier resolves the workspace identifier for a group returned
+// by the Bitbucket branch-restrictions API.
+//
+// The API currently returns the workspace slug in group.Owner.Username with
+// group.Owner.Uuid empty. However, the response may also include a
+// group.Workspace object that carries the workspace UUID — checked first so
+// users who configure groups.owner with a UUID see a stable round-trip if the
+// API provides it.
+//
+// Priority: group.Workspace.Uuid → group.Owner.Uuid → group.Workspace.Slug → group.Owner.Username
+// Returns "" if no identifier can be resolved (caller must drop the group).
+func groupOwnerIdentifier(group bitbucket.Group) string {
+	if group.Workspace != nil && group.Workspace.Uuid != "" {
+		return group.Workspace.Uuid
+	}
+	if group.Owner != nil && group.Owner.Uuid != "" {
+		return group.Owner.Uuid
+	}
+	if group.Workspace != nil && group.Workspace.Slug != "" {
+		return group.Workspace.Slug
+	}
+	if group.Owner != nil && group.Owner.Username != "" {
+		return group.Owner.Username
+	}
+	return ""
+}
+
 // flattenBranchRestrictionGroups reports the owner/slug pairs the API returns
 // for groups, since brRes.Groups is a slice of structs that doesn't match the
 // groups TypeSet's Resource{owner, slug} shape.
 //
-// Groups whose owner cannot be resolved (nil pointer, or account with both
-// uuid and username empty) are silently dropped — the same policy
-// flattenBranchRestrictionUsers applies to unidentifiable accounts.  Writing
-// owner:"" would guarantee a persistent diff because owner is Required in the
-// schema and no real HCL config can supply an empty string there.
+// Groups whose owner cannot be resolved are silently dropped — writing owner:""
+// would guarantee a persistent diff because owner is Required in the schema and
+// no real HCL config can supply an empty string there.
+// See groupOwnerIdentifier for the resolution priority.
 func flattenBranchRestrictionGroups(groups []bitbucket.Group) []interface{} {
 	flattened := make([]interface{}, 0, len(groups))
 
 	for _, group := range groups {
-		owner := ""
-		if group.Owner != nil {
-			owner = accountIdentifier(*group.Owner)
-		}
+		owner := groupOwnerIdentifier(group)
 		if owner == "" {
 			continue
 		}

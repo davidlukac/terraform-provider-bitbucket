@@ -136,6 +136,10 @@ func TestAccBitbucketBranchRestriction_groups(t *testing.T) {
 					testAccCheckBitbucketBranchRestrictionExists(resourceName),
 					resource.TestCheckResourceAttr(resourceName, "groups.#", "1"),
 					resource.TestCheckTypeSetElemAttrPair(resourceName, "groups.*.slug", "bitbucket_group.test", "slug"),
+					// TODO: confirm which identifier the real API returns for groups.owner.
+					// groupOwnerIdentifier prefers group.Workspace.Uuid (UUID) when present,
+					// falling back to group.Workspace.Slug / group.Owner.Username (slug).
+					// If the API does not populate group.Workspace.Uuid, change .id -> .slug here.
 					resource.TestCheckTypeSetElemAttrPair(resourceName, "groups.*.owner", "data.bitbucket_workspace.test", "id"),
 				),
 			},
@@ -425,6 +429,9 @@ func TestFlattenBranchRestrictionUsers(t *testing.T) {
 }
 
 func TestFlattenBranchRestrictionGroups(t *testing.T) {
+	wsUUID := "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}"
+	ownerUUID := "{deadbeef-dead-beef-dead-beefdeadbeef}"
+
 	cases := []struct {
 		name  string
 		input []bitbucket.Group
@@ -441,35 +448,69 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			[]interface{}{},
 		},
 		{
-			"populated owner",
+			// The API may return group.Workspace with a UUID — preferred above all
+			// other identifiers so users who configure owner as UUID see a stable
+			// round-trip when this field is populated.
+			"workspace uuid preferred over owner uuid",
 			[]bitbucket.Group{
-				{Owner: &bitbucket.Account{Uuid: "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}"}, Slug: "my-group"},
+				{
+					Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "ws-slug"},
+					Owner:     &bitbucket.Account{Uuid: ownerUUID},
+					Slug:      "my-group",
+				},
 			},
 			[]interface{}{
-				map[string]interface{}{"owner": "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}", "slug": "my-group"},
+				map[string]interface{}{"owner": wsUUID, "slug": "my-group"},
 			},
 		},
 		{
-			// A group with a nil owner pointer cannot be expressed in HCL
-			// (owner is Required), so it is dropped rather than written with
-			// owner:"" which would guarantee a persistent diff.
-			"nil owner omitted",
+			// Regression: Bitbucket API returns group.Owner.Username = workspace slug,
+			// group.Owner.Uuid = "". If group.Workspace.Uuid is populated, it should
+			// be preferred over Owner.Username to prevent a UUID↔slug perpetual diff.
+			"workspace uuid preferred over owner username (regression case)",
 			[]bitbucket.Group{
-				{Owner: nil, Slug: "my-group"},
+				{
+					Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "sycle-corp"},
+					Owner:     &bitbucket.Account{Username: "sycle-corp"},
+					Slug:      "administrators",
+				},
 			},
-			[]interface{}{},
+			[]interface{}{
+				map[string]interface{}{"owner": wsUUID, "slug": "administrators"},
+			},
 		},
 		{
-			// Same as nil-owner: an account with both fields empty is
-			// unidentifiable and must be dropped for the same reason.
-			"fully empty owner omitted",
+			// When workspace UUID is absent, fall back to owner UUID.
+			"owner uuid used when workspace uuid empty",
 			[]bitbucket.Group{
-				{Owner: &bitbucket.Account{}, Slug: "my-group"},
+				{
+					Workspace: &bitbucket.Workspace{Slug: "ws-slug"},
+					Owner:     &bitbucket.Account{Uuid: ownerUUID},
+					Slug:      "my-group",
+				},
 			},
-			[]interface{}{},
+			[]interface{}{
+				map[string]interface{}{"owner": ownerUUID, "slug": "my-group"},
+			},
 		},
 		{
-			"owner with only username falls back to it",
+			// When both UUIDs are absent, prefer workspace slug over owner username.
+			"workspace slug preferred over owner username",
+			[]bitbucket.Group{
+				{
+					Workspace: &bitbucket.Workspace{Slug: "ws-slug"},
+					Owner:     &bitbucket.Account{Username: "owner-username"},
+					Slug:      "my-group",
+				},
+			},
+			[]interface{}{
+				map[string]interface{}{"owner": "ws-slug", "slug": "my-group"},
+			},
+		},
+		{
+			// Last-resort fallback: no workspace at all, owner has only username.
+			// This matches the pre-Workspace-field API behaviour (legacy configs).
+			"owner username fallback when workspace nil",
 			[]bitbucket.Group{
 				{Owner: &bitbucket.Account{Username: "legacy-owner"}, Slug: "my-group"},
 			},
@@ -478,15 +519,37 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			},
 		},
 		{
+			// A group with no resolvable owner cannot be expressed in HCL
+			// (owner is Required), so it is dropped rather than written with
+			// owner:"" which would guarantee a persistent diff.
+			"nil owner and nil workspace omitted",
+			[]bitbucket.Group{
+				{Owner: nil, Workspace: nil, Slug: "my-group"},
+			},
+			[]interface{}{},
+		},
+		{
+			// Same: all identifier fields empty → must be dropped.
+			"fully empty owner and workspace omitted",
+			[]bitbucket.Group{
+				{Owner: &bitbucket.Account{}, Workspace: &bitbucket.Workspace{}, Slug: "my-group"},
+			},
+			[]interface{}{},
+		},
+		{
 			// CLAUDE.md requires flatten-helper tests to cover a mix of valid
 			// (UUID) and legacy-format (username) values in the same collection.
-			"mix of uuid-owner and username-owner groups",
+			"mix of workspace-uuid group and owner-username group",
 			[]bitbucket.Group{
-				{Owner: &bitbucket.Account{Uuid: "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}"}, Slug: "uuid-group"},
+				{
+					Workspace: &bitbucket.Workspace{Uuid: wsUUID},
+					Owner:     &bitbucket.Account{Username: "ws-slug"},
+					Slug:      "uuid-group",
+				},
 				{Owner: &bitbucket.Account{Username: "legacy-owner"}, Slug: "legacy-group"},
 			},
 			[]interface{}{
-				map[string]interface{}{"owner": "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}", "slug": "uuid-group"},
+				map[string]interface{}{"owner": wsUUID, "slug": "uuid-group"},
 				map[string]interface{}{"owner": "legacy-owner", "slug": "legacy-group"},
 			},
 		},
@@ -518,6 +581,81 @@ func TestAccountIdentifier(t *testing.T) {
 			got := accountIdentifier(tc.input)
 			if got != tc.want {
 				t.Errorf("accountIdentifier(%+v) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGroupOwnerIdentifier(t *testing.T) {
+	wsUUID := "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}"
+	ownerUUID := "{deadbeef-dead-beef-dead-beefdeadbeef}"
+
+	cases := []struct {
+		name  string
+		input bitbucket.Group
+		want  string
+	}{
+		{
+			"workspace uuid preferred",
+			bitbucket.Group{
+				Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "ws-slug"},
+				Owner:     &bitbucket.Account{Uuid: ownerUUID, Username: "owner-slug"},
+			},
+			wsUUID,
+		},
+		{
+			// Regression: API returns Owner.Username = workspace slug, Owner.Uuid = "".
+			// If group.Workspace.Uuid is present it must win.
+			"workspace uuid beats owner username (regression)",
+			bitbucket.Group{
+				Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "sycle-corp"},
+				Owner:     &bitbucket.Account{Username: "sycle-corp"},
+			},
+			wsUUID,
+		},
+		{
+			"owner uuid when workspace uuid absent",
+			bitbucket.Group{
+				Workspace: &bitbucket.Workspace{Slug: "ws-slug"},
+				Owner:     &bitbucket.Account{Uuid: ownerUUID},
+			},
+			ownerUUID,
+		},
+		{
+			"workspace slug when both uuids absent",
+			bitbucket.Group{
+				Workspace: &bitbucket.Workspace{Slug: "ws-slug"},
+				Owner:     &bitbucket.Account{Username: "owner-username"},
+			},
+			"ws-slug",
+		},
+		{
+			"owner username last resort",
+			bitbucket.Group{
+				Owner: &bitbucket.Account{Username: "legacy-owner"},
+			},
+			"legacy-owner",
+		},
+		{
+			"nil workspace and nil owner returns empty",
+			bitbucket.Group{},
+			"",
+		},
+		{
+			"empty workspace and empty owner returns empty",
+			bitbucket.Group{
+				Workspace: &bitbucket.Workspace{},
+				Owner:     &bitbucket.Account{},
+			},
+			"",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := groupOwnerIdentifier(tc.input)
+			if got != tc.want {
+				t.Errorf("groupOwnerIdentifier() = %q, want %q", got, tc.want)
 			}
 		})
 	}
