@@ -88,6 +88,7 @@ func resourceProjectBranchingModel() *schema.Resource {
 			"production": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true, // The API always returns a production block, even when not configured.
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -102,17 +103,24 @@ func resourceProjectBranchingModel() *schema.Resource {
 						"use_mainbranch": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 						"branch_does_not_exist": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 						"enabled": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 					},
 				},
+			},
+			"default_branch_deletion": {
+				Type:     schema.TypeBool,
+				Optional: true,
 			},
 		},
 	}
@@ -185,10 +193,19 @@ func resourceProjectBranchingModelsRead(ctx context.Context, d *schema.ResourceD
 		return diag.FromErr(decodeerr)
 	}
 
+	// Set default value for Enabled if it is nil
+	for _, branchType := range branchingModel.BranchTypes {
+		if branchType.Enabled == nil {
+			defaultTrue := true
+			branchType.Enabled = &defaultTrue
+		}
+	}
+
 	log.Printf("[DEBUG] Project Branching Model Response Decoded: %#v", branchingModel)
 
 	d.Set("workspace", workspace)
 	d.Set("project", repo)
+	d.Set("default_branch_deletion", branchingModel.DefaultBranchDeletion.BoolPtr())
 	d.Set("development", flattenBranchModel(branchingModel.Development, "development"))
 	d.Set("branch_type", flattenBranchTypes(branchingModel.BranchTypes))
 	d.Set("production", flattenBranchModel(branchingModel.Production, "production"))

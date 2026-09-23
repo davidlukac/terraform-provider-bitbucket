@@ -100,14 +100,29 @@ func TestFlexBool_UnmarshalJSON_Absent(t *testing.T) {
 }
 
 func TestFlexBool_MarshalJSON(t *testing.T) {
-	val := true
-	fb := FlexBool{Value: &val}
-	data, err := json.Marshal(fb)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	trueVal := true
+	falseVal := false
+	tests := []struct {
+		name     string
+		fb       FlexBool
+		expected string
+	}{
+		// The Bitbucket API requires string representation ("true"/"false"),
+		// not native JSON booleans, for default_branch_deletion on write.
+		{name: "true", fb: FlexBool{Value: &trueVal}, expected: `"true"`},
+		{name: "false", fb: FlexBool{Value: &falseVal}, expected: `"false"`},
+		{name: "nil", fb: FlexBool{Value: nil}, expected: "null"},
 	}
-	if string(data) != "true" {
-		t.Fatalf("expected 'true', got %s", string(data))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.fb)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(data) != tc.expected {
+				t.Fatalf("expected %s, got %s", tc.expected, string(data))
+			}
+		})
 	}
 }
 
