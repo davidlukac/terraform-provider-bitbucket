@@ -35,6 +35,9 @@ terraform.tfstate
 
 terraform-provider-bitbucket
 
+# Local dev / agent notes (not for upstream)
+.devin/
+
 # Test exclusions
 !command/test-fixtures/**/*.tfstate
 !command/test-fixtures/**/.terraform/
