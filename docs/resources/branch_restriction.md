@@ -25,11 +25,11 @@ resource "bitbucket_branch_restriction" "master" {
   kind = "push"
   pattern = "master"
 
-  users = [ "my-bitbucket-username" ]
+  users = [ "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}" ] # UUID, or a legacy username
 
   groups {
     slug = "my-group"
-    owner = "my-owner"
+    owner = "{deadbeef-dead-beef-dead-beefdeadbeef}" # UUID, or a legacy username
   }
 }
 ```
@@ -45,8 +45,8 @@ The following arguments are supported:
 * `branch_match_kind` - (Optional) Indicates how the restriction is matched against a branch. The default is `glob`. Valid values: `branching_model`, `glob`.
 * `branch_type` - (Optional) Apply the restriction to branches of this type. Active when `branch_match_kind` is `branching_model`. The branch type will be calculated using the branching model configured for the repository. Valid values: `feature`, `bugfix`, `release`, `hotfix`, `development`, `production`.
 * `pattern` - (Optional) Apply the restriction to branches that match this pattern. Active when `branch_match_kind` is `glob`. Will be empty when `branch_match_kind` is `branching_model`.
-* `users` - (Optional) A list of users to use.
-* `groups` - (Optional) A list of groups to use.
+* `users` - (Optional) A list of users to use. Accepts Bitbucket account UUIDs (e.g. `{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}`) or legacy usernames. Bitbucket has deprecated usernames account-wide and no longer returns them, so a username-based entry will keep showing a diff on every `terraform plan`/`apply` until the config is updated to use the equivalent UUID. If you can't migrate right away, add `lifecycle { ignore_changes = [users] }` to suppress it.
+* `groups` - (Optional) A list of groups to use. `owner` accepts a UUID or a legacy username, and the same permanent-diff caveat as `users` above applies to username-based owners: Bitbucket no longer returns them, so add `lifecycle { ignore_changes = [groups] }` if you can't migrate `owner` to a UUID right away.
 * `value` - (Optional) A value applied to the restriction kind. Currently only applicable to `require_passing_builds_to_merge`, `require_default_reviewer_approvals_to_merge` and `require_approvals_to_merge`.
 
 ## Import

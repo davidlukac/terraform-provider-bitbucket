@@ -7,6 +7,7 @@ import (
 
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/DrFaust92/bitbucket-go-client"
@@ -14,6 +15,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
+
+// bitbucketUUIDPattern matches Bitbucket's canonical curly-brace-wrapped UUID format.
+var bitbucketUUIDPattern = regexp.MustCompile(`^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$`)
 
 // BranchRestriction is the data we need to send to create a new branch restriction for the repository
 type BranchRestriction struct {
@@ -109,15 +113,37 @@ func resourceBranchRestriction() *schema.Resource {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
-				Set:      schema.HashString,
+				// Normalize to lowercase before hashing so that a UUID typed in
+				// mixed case (e.g. {C0FFEE00-...}) lands in the same set bucket
+				// as the lowercase form the API returns, preventing a perpetual
+				// diff for users who supply upper- or mixed-case UUIDs.
+				Set: func(v interface{}) int {
+					return schema.HashString(strings.ToLower(v.(string)))
+				},
 			},
 			"groups": {
 				Type: schema.TypeSet,
+				// Normalize owner to lowercase before hashing so that a UUID typed
+				// in mixed case (e.g. {C0FFEE00-...}) lands in the same set bucket
+				// as the lowercase form the API returns, preventing a perpetual diff
+				// for users who supply upper- or mixed-case UUIDs.  DiffSuppressFunc
+				// on the owner attribute alone has no effect on TypeSet hash
+				// computation, so this custom Set func is required.
+				Set: func(v interface{}) int {
+					m := v.(map[string]interface{})
+					return schema.HashString(strings.ToLower(m["owner"].(string)) + "\x00" + m["slug"].(string))
+				},
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"owner": {
 							Type:     schema.TypeString,
 							Required: true,
+							// Belt-and-suspenders: also suppress attribute-level diffs
+							// caused by UUID casing so plan output stays clean even if
+							// the hash normalization above misses an edge case.
+							DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+								return strings.EqualFold(old, new)
+							},
 						},
 						"slug": {
 							Type:     schema.TypeString,
@@ -141,11 +167,7 @@ func createBranchRestriction(d *schema.ResourceData) *bitbucket.Branchrestrictio
 	users := make([]bitbucket.Account, 0, d.Get("users").(*schema.Set).Len())
 
 	for _, item := range d.Get("users").(*schema.Set).List() {
-		account := bitbucket.Account{
-			Username: item.(string),
-		}
-
-		users = append(users, account)
+		users = append(users, expandBranchRestrictionUser(item.(string)))
 	}
 
 	groups := make([]bitbucket.Group, 0, d.Get("groups").(*schema.Set).Len())
@@ -153,12 +175,10 @@ func createBranchRestriction(d *schema.ResourceData) *bitbucket.Branchrestrictio
 	for _, item := range d.Get("groups").(*schema.Set).List() {
 		m := item.(map[string]interface{})
 
-		account := &bitbucket.Account{
-			Username: m["owner"].(string),
-		}
+		owner := expandBranchRestrictionUser(m["owner"].(string))
 
 		group := bitbucket.Group{
-			Owner: account,
+			Owner: &owner,
 			Slug:  m["slug"].(string),
 		}
 
@@ -225,8 +245,12 @@ func resourceBranchRestrictionsRead(ctx context.Context, d *schema.ResourceData,
 	d.Set("kind", brRes.Kind)
 	d.Set("pattern", brRes.Pattern)
 	d.Set("value", brRes.Value)
-	d.Set("users", brRes.Users)
-	d.Set("groups", brRes.Groups)
+	if err := d.Set("users", flattenBranchRestrictionUsers(brRes.Users)); err != nil {
+		return diag.FromErr(fmt.Errorf("error setting users: %w", err))
+	}
+	if err := d.Set("groups", flattenBranchRestrictionGroups(brRes.Groups)); err != nil {
+		return diag.FromErr(fmt.Errorf("error setting groups: %w", err))
+	}
 	d.Set("branch_type", brRes.BranchType)
 	d.Set("branch_match_kind", brRes.BranchMatchKind)
 
@@ -266,4 +290,72 @@ func resourceBranchRestrictionsDelete(ctx context.Context, d *schema.ResourceDat
 	}
 
 	return nil
+}
+
+// expandBranchRestrictionUser builds the Account to send for a users or
+// groups-owner entry. Bitbucket has deprecated legacy usernames, so a
+// UUID-shaped entry is sent as Uuid (normalized to lowercase to match the
+// canonical form the API returns, so Read converges with it); anything else
+// is sent as Username, preserving existing configs.
+func expandBranchRestrictionUser(item string) bitbucket.Account {
+	if bitbucketUUIDPattern.MatchString(item) {
+		return bitbucket.Account{Uuid: strings.ToLower(item)}
+	}
+
+	return bitbucket.Account{Username: item}
+}
+
+// accountIdentifier returns the identifier to report in state for an
+// account: its uuid if present, else its (deprecated) username, else "".
+func accountIdentifier(account bitbucket.Account) string {
+	if account.Uuid != "" {
+		return account.Uuid
+	}
+
+	return account.Username
+}
+
+// flattenBranchRestrictionUsers reports the identifier the API returns for
+// each user, preferring uuid since usernames are deprecated and no longer
+// returned by the API.
+func flattenBranchRestrictionUsers(users []bitbucket.Account) []string {
+	flattened := make([]string, 0, len(users))
+
+	for _, user := range users {
+		if id := accountIdentifier(user); id != "" {
+			flattened = append(flattened, id)
+		}
+	}
+
+	return flattened
+}
+
+// flattenBranchRestrictionGroups reports the owner/slug pairs the API returns
+// for groups, since brRes.Groups is a slice of structs that doesn't match the
+// groups TypeSet's Resource{owner, slug} shape.
+//
+// Groups whose owner cannot be resolved (nil pointer, or account with both
+// uuid and username empty) are silently dropped — the same policy
+// flattenBranchRestrictionUsers applies to unidentifiable accounts.  Writing
+// owner:"" would guarantee a persistent diff because owner is Required in the
+// schema and no real HCL config can supply an empty string there.
+func flattenBranchRestrictionGroups(groups []bitbucket.Group) []interface{} {
+	flattened := make([]interface{}, 0, len(groups))
+
+	for _, group := range groups {
+		owner := ""
+		if group.Owner != nil {
+			owner = accountIdentifier(*group.Owner)
+		}
+		if owner == "" {
+			continue
+		}
+
+		flattened = append(flattened, map[string]interface{}{
+			"owner": owner,
+			"slug":  group.Slug,
+		})
+	}
+
+	return flattened
 }
