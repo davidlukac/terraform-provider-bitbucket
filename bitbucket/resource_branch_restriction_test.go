@@ -159,6 +159,60 @@ func TestAccBitbucketBranchRestriction_groups(t *testing.T) {
 	})
 }
 
+// TestAccBitbucketBranchRestriction_groupsExisting verifies the UUID round-trip
+// for groups.owner without requiring group creation (which needs account:write,
+// unavailable on modern Atlassian API tokens).
+//
+// It uses a pre-existing workspace group identified by BITBUCKET_EXISTING_GROUP_SLUG
+// and grants it write access to the test repo before adding it to a branch
+// restriction. It then verifies that:
+//   - groups.owner in state matches the workspace UUID (not the slug)
+//   - a plan immediately after apply is empty (no perpetual diff)
+//   - ImportStateVerify passes
+//
+// For davidlukac07 use: BITBUCKET_EXISTING_GROUP_SLUG=da52073d-f30b-49e1-907a-be56bb5c0f5b
+func TestAccBitbucketBranchRestriction_groupsExisting(t *testing.T) {
+	groupSlug := os.Getenv("BITBUCKET_EXISTING_GROUP_SLUG")
+	if groupSlug == "" {
+		t.Skip("BITBUCKET_EXISTING_GROUP_SLUG must be set for this test")
+	}
+
+	rName := acctest.RandomWithPrefix("tf-test")
+	testUser := os.Getenv("BITBUCKET_TEAM")
+	resourceName := "bitbucket_branch_restriction.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders, //nolint:staticcheck // pre-existing repo-wide pattern; ProviderFactories migration is out of scope
+		CheckDestroy: testAccCheckBitbucketBranchRestrictionDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBitbucketBranchRestrictionGroupsExistingConfig(testUser, rName, groupSlug),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBitbucketBranchRestrictionExists(resourceName),
+					resource.TestCheckResourceAttr(resourceName, "groups.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "groups.0.slug", groupSlug),
+					// The 2.0 API returns owner.uuid for the group owner.
+					// groupOwnerIdentifier picks Workspace.Uuid (or Owner.Uuid) so
+					// state should contain the workspace UUID, not the slug.
+					resource.TestCheckTypeSetElemAttrPair(resourceName, "groups.*.owner", "data.bitbucket_workspace.test", "id"),
+				),
+			},
+			{
+				// UUID round-trip: plan immediately after apply must be empty.
+				Config:   testAccBitbucketBranchRestrictionGroupsExistingConfig(testUser, rName, groupSlug),
+				PlanOnly: true,
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateIdFunc: testAccCheckBitbucketBranchRestrictionImportStateIdFunc(resourceName),
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
 // TestAccBitbucketBranchRestriction_legacyUsername proves the documented
 // perpetual-diff behavior end-to-end: Bitbucket's API no longer returns
 // usernames, so a config still pinned to one never converges after apply.
@@ -800,6 +854,45 @@ resource "bitbucket_branch_restriction" "test" {
   }
 }
 `, testUser, rName)
+}
+
+// testAccBitbucketBranchRestrictionGroupsExistingConfig creates a repo, grants
+// the pre-existing group write access (required before it can be used in a push
+// restriction), then creates a push restriction referencing the group.
+// groups.owner uses the workspace UUID (data.bitbucket_workspace.test.id) so
+// the test verifies the UUID round-trip through the 2.0 API.
+func testAccBitbucketBranchRestrictionGroupsExistingConfig(testUser, rName, groupSlug string) string {
+	return fmt.Sprintf(`
+data "bitbucket_workspace" "test" {
+  workspace = %[1]q
+}
+
+resource "bitbucket_repository" "test" {
+  owner = %[1]q
+  name  = %[2]q
+}
+
+resource "bitbucket_repository_group_permission" "test" {
+  workspace  = %[1]q
+  repo_slug  = bitbucket_repository.test.name
+  group_slug = %[3]q
+  permission = "write"
+}
+
+resource "bitbucket_branch_restriction" "test" {
+  owner      = %[1]q
+  repository = bitbucket_repository.test.name
+  kind       = "push"
+  pattern    = "master"
+
+  groups {
+    owner = data.bitbucket_workspace.test.id
+    slug  = %[3]q
+  }
+
+  depends_on = [bitbucket_repository_group_permission.test]
+}
+`, testUser, rName, groupSlug)
 }
 
 func testAccBitbucketBranchRestrictionLegacyUsernameConfig(testUser, rName, legacyUsername string) string {
