@@ -136,10 +136,9 @@ func TestAccBitbucketBranchRestriction_groups(t *testing.T) {
 					testAccCheckBitbucketBranchRestrictionExists(resourceName),
 					resource.TestCheckResourceAttr(resourceName, "groups.#", "1"),
 					resource.TestCheckTypeSetElemAttrPair(resourceName, "groups.*.slug", "bitbucket_group.test", "slug"),
-					// TODO: confirm which identifier the real API returns for groups.owner.
-					// groupOwnerIdentifier prefers group.Workspace.Uuid (UUID) when present,
-					// falling back to group.Workspace.Slug / group.Owner.Username (slug).
-					// If the API does not populate group.Workspace.Uuid, change .id -> .slug here.
+					// Confirmed: the 2.0 API returns owner.uuid and workspace.uuid in the
+					// group object on both personal (davidlukac07) and org (sycle-corp)
+					// workspaces. groups.owner round-trips as the workspace UUID.
 					resource.TestCheckTypeSetElemAttrPair(resourceName, "groups.*.owner", "data.bitbucket_workspace.test", "id"),
 				),
 			},
