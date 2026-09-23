@@ -428,23 +428,37 @@ func TestFlattenBranchRestrictionUsers(t *testing.T) {
 	}
 }
 
+// makeGroupsSet builds a *schema.Set matching the groups TypeSet schema,
+// seeded with the provided (owner, slug) pairs, for use in prevState arguments.
+func makeGroupsSet(pairs []map[string]interface{}) *schema.Set {
+	setFunc := resourceBranchRestriction().Schema["groups"].Set
+	s := schema.NewSet(setFunc, nil)
+	for _, m := range pairs {
+		s.Add(m)
+	}
+	return s
+}
+
 func TestFlattenBranchRestrictionGroups(t *testing.T) {
 	wsUUID := "{c0ffee00-c0ff-eec0-ffee-c0ffeec0ffee}"
 	ownerUUID := "{deadbeef-dead-beef-dead-beefdeadbeef}"
 
 	cases := []struct {
-		name  string
-		input []bitbucket.Group
-		want  []interface{}
+		name      string
+		input     []bitbucket.Group
+		prevState *schema.Set
+		want      []interface{}
 	}{
 		{
 			"nil slice",
+			nil,
 			nil,
 			[]interface{}{},
 		},
 		{
 			"empty slice",
 			[]bitbucket.Group{},
+			nil,
 			[]interface{}{},
 		},
 		{
@@ -459,24 +473,67 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 					Slug:      "my-group",
 				},
 			},
+			nil,
 			[]interface{}{
 				map[string]interface{}{"owner": wsUUID, "slug": "my-group"},
 			},
 		},
 		{
 			// Regression: Bitbucket API returns group.Owner.Username = workspace slug,
-			// group.Owner.Uuid = "". If group.Workspace.Uuid is populated, it should
-			// be preferred over Owner.Username to prevent a UUID↔slug perpetual diff.
-			"workspace uuid preferred over owner username (regression case)",
+			// group.Owner.Uuid = "", group.Workspace = nil (API omits Workspace field).
+			// If prevState had a UUID owner for the same slug, preserve it.
+			"prevState uuid preserved when API returns slug (regression)",
 			[]bitbucket.Group{
-				{
-					Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "sycle-corp"},
-					Owner:     &bitbucket.Account{Username: "sycle-corp"},
-					Slug:      "administrators",
-				},
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "administrators"},
 			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": "{c73001e4-85bf-4fa1-a18e-f02a5fc392c4}", "slug": "administrators"},
+			}),
 			[]interface{}{
-				map[string]interface{}{"owner": wsUUID, "slug": "administrators"},
+				map[string]interface{}{"owner": "{c73001e4-85bf-4fa1-a18e-f02a5fc392c4}", "slug": "administrators"},
+			},
+		},
+		{
+			// Multiple groups: UUID owners in prevState are all preserved.
+			"prevState uuid preserved for multiple groups",
+			[]bitbucket.Group{
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "admins"},
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "developers"},
+			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": wsUUID, "slug": "admins"},
+				{"owner": wsUUID, "slug": "developers"},
+			}),
+			[]interface{}{
+				map[string]interface{}{"owner": wsUUID, "slug": "admins"},
+				map[string]interface{}{"owner": wsUUID, "slug": "developers"},
+			},
+		},
+		{
+			// If prevState has a slug owner and API returns slug, slug is used.
+			// No UUID in prevState → no substitution.
+			"slug in prevState stays slug",
+			[]bitbucket.Group{
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "my-group"},
+			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": "sycle-corp", "slug": "my-group"},
+			}),
+			[]interface{}{
+				map[string]interface{}{"owner": "sycle-corp", "slug": "my-group"},
+			},
+		},
+		{
+			// New group (not in prevState): slug is used as-is.
+			"new group not in prevState uses api value",
+			[]bitbucket.Group{
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "new-group"},
+			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": wsUUID, "slug": "other-group"},
+			}),
+			[]interface{}{
+				map[string]interface{}{"owner": "sycle-corp", "slug": "new-group"},
 			},
 		},
 		{
@@ -489,13 +546,14 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 					Slug:      "my-group",
 				},
 			},
+			nil,
 			[]interface{}{
 				map[string]interface{}{"owner": ownerUUID, "slug": "my-group"},
 			},
 		},
 		{
-			// When both UUIDs are absent, prefer workspace slug over owner username.
-			"workspace slug preferred over owner username",
+			// When both UUIDs are absent and no prevState, prefer workspace slug.
+			"workspace slug preferred over owner username (no prevState)",
 			[]bitbucket.Group{
 				{
 					Workspace: &bitbucket.Workspace{Slug: "ws-slug"},
@@ -503,17 +561,18 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 					Slug:      "my-group",
 				},
 			},
+			nil,
 			[]interface{}{
 				map[string]interface{}{"owner": "ws-slug", "slug": "my-group"},
 			},
 		},
 		{
-			// Last-resort fallback: no workspace at all, owner has only username.
-			// This matches the pre-Workspace-field API behaviour (legacy configs).
+			// Last-resort fallback: no workspace, owner has only username.
 			"owner username fallback when workspace nil",
 			[]bitbucket.Group{
 				{Owner: &bitbucket.Account{Username: "legacy-owner"}, Slug: "my-group"},
 			},
+			nil,
 			[]interface{}{
 				map[string]interface{}{"owner": "legacy-owner", "slug": "my-group"},
 			},
@@ -526,6 +585,7 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			[]bitbucket.Group{
 				{Owner: nil, Workspace: nil, Slug: "my-group"},
 			},
+			nil,
 			[]interface{}{},
 		},
 		{
@@ -534,20 +594,20 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			[]bitbucket.Group{
 				{Owner: &bitbucket.Account{}, Workspace: &bitbucket.Workspace{}, Slug: "my-group"},
 			},
+			nil,
 			[]interface{}{},
 		},
 		{
 			// CLAUDE.md requires flatten-helper tests to cover a mix of valid
 			// (UUID) and legacy-format (username) values in the same collection.
-			"mix of workspace-uuid group and owner-username group",
+			"mix: prevState UUID preserved + new slug group",
 			[]bitbucket.Group{
-				{
-					Workspace: &bitbucket.Workspace{Uuid: wsUUID},
-					Owner:     &bitbucket.Account{Username: "ws-slug"},
-					Slug:      "uuid-group",
-				},
+				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "uuid-group"},
 				{Owner: &bitbucket.Account{Username: "legacy-owner"}, Slug: "legacy-group"},
 			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": wsUUID, "slug": "uuid-group"},
+			}),
 			[]interface{}{
 				map[string]interface{}{"owner": wsUUID, "slug": "uuid-group"},
 				map[string]interface{}{"owner": "legacy-owner", "slug": "legacy-group"},
@@ -557,7 +617,7 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := flattenBranchRestrictionGroups(tc.input)
+			got := flattenBranchRestrictionGroups(tc.input, tc.prevState)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("flattenBranchRestrictionGroups() = %v, want %v", got, tc.want)
 			}
