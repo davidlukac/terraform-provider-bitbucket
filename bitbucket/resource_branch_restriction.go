@@ -241,6 +241,56 @@ func resourceBranchRestrictionsRead(ctx context.Context, d *schema.ResourceData,
 		return diag.FromErr(err)
 	}
 
+	var diags diag.Diagnostics
+
+	// Warn when prevState contains legacy username-format users but the API
+	// now returns only UUIDs (Bitbucket deprecated and removed username from
+	// account responses as part of its GDPR changes). Keeping a username in
+	// config produces a perpetual diff on every plan/apply because the API
+	// accepts usernames on write but never echoes them back on read.
+	// The warning lists each affected user's UUID and display name so the
+	// operator can update their config.  The diff disappears permanently once
+	// config is updated to use UUIDs. See: github.com/DrFaust92/terraform-provider-bitbucket/issues/173
+	prevUsers := d.Get("users").(*schema.Set)
+	if prevUsers.Len() > 0 && len(brRes.Users) > 0 {
+		var staleUsernames []string
+		for _, raw := range prevUsers.List() {
+			if s := raw.(string); !bitbucketUUIDPattern.MatchString(s) {
+				staleUsernames = append(staleUsernames, s)
+			}
+		}
+		if len(staleUsernames) > 0 {
+			var lines []string
+			for _, u := range brRes.Users {
+				if u.Uuid != "" {
+					name := u.DisplayName
+					if name == "" {
+						name = u.Uuid
+					}
+					lines = append(lines, fmt.Sprintf("  • %s (%s)", u.Uuid, name))
+				}
+			}
+			if len(lines) > 0 {
+				diags = append(diags, diag.Diagnostic{
+					Severity: diag.Warning,
+					Summary:  "branch_restriction: users migrating from legacy username to UUID",
+					Detail: fmt.Sprintf(
+						"This resource has legacy username(s) in state (%s), but the "+
+							"Bitbucket API no longer returns usernames (deprecated as part of "+
+							"Bitbucket's GDPR changes). Terraform will update state to use UUIDs, "+
+							"producing a perpetual diff on every plan/apply until the config is "+
+							"updated to use UUIDs.\n\nUsers currently on this restriction:\n%s\n\n"+
+							"Update your config to use the UUIDs above. As a temporary escape "+
+							"hatch, add `lifecycle { ignore_changes = [users] }` to suppress the "+
+							"diff without migrating.",
+						strings.Join(staleUsernames, ", "),
+						strings.Join(lines, "\n"),
+					),
+				})
+			}
+		}
+	}
+
 	d.SetId(fmt.Sprintf("%v", brRes.Id))
 	d.Set("kind", brRes.Kind)
 	d.Set("pattern", brRes.Pattern)
@@ -254,7 +304,7 @@ func resourceBranchRestrictionsRead(ctx context.Context, d *schema.ResourceData,
 	d.Set("branch_type", brRes.BranchType)
 	d.Set("branch_match_kind", brRes.BranchMatchKind)
 
-	return nil
+	return diags
 }
 
 func resourceBranchRestrictionsUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
