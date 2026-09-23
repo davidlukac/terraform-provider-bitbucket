@@ -363,17 +363,26 @@ func groupOwnerIdentifier(group bitbucket.Group) string {
 //
 // prevState is the groups TypeSet from state before this Read call (i.e.
 // d.Get("groups").(*schema.Set) read before d.Set("groups", ...) overwrites it).
-// When the API returns a slug owner and prevState has a UUID owner for the same
-// group slug, the UUID is preserved — preventing a perpetual diff for users who
-// configure groups.owner as a UUID while the API returns the workspace slug.
+//
+// The Bitbucket API returns both a UUID and a slug for the group owner. Either
+// form is valid in config, but whichever form the user chose must round-trip
+// stably through state — mixing UUID on Read with a slug in config (or vice
+// versa) produces a perpetual TypeSet hash mismatch. To avoid this, when
+// prevState has a non-empty owner for the same group slug, that owner is
+// preserved verbatim, regardless of what the API returned. This means:
+//
+//   - Users who configure groups.owner as a UUID keep the UUID in state.
+//   - Users who configure groups.owner as a slug keep the slug in state.
+//   - New groups (not yet in state) use the UUID from the API if available,
+//     falling back to the slug — so new resources default to UUID format.
 //
 // Groups whose owner cannot be resolved are silently dropped — writing owner:""
 // would guarantee a persistent diff because owner is Required in the schema and
 // no real HCL config can supply an empty string there.
-// See groupOwnerIdentifier for the resolution priority.
+// See groupOwnerIdentifier for the resolution priority for new groups.
 func flattenBranchRestrictionGroups(groups []bitbucket.Group, prevState *schema.Set) []interface{} {
-	// Build a slug→owner lookup from the previous state so we can preserve
-	// UUID owners that the API no longer returns.
+	// Build a groupSlug→owner lookup from the previous state so we can
+	// preserve whatever owner form the user originally configured.
 	prevOwnerBySlug := make(map[string]string)
 	if prevState != nil {
 		for _, raw := range prevState.List() {
@@ -394,11 +403,18 @@ func flattenBranchRestrictionGroups(groups []bitbucket.Group, prevState *schema.
 			continue
 		}
 
-		// If the API returned a non-UUID owner (i.e. workspace slug) but the
-		// prior state had a UUID for the same group slug, keep the UUID.
-		// This prevents a perpetual diff when the user's config uses a UUID.
-		if !bitbucketUUIDPattern.MatchString(owner) {
-			if prev, ok := prevOwnerBySlug[group.Slug]; ok && bitbucketUUIDPattern.MatchString(prev) {
+		// If prevState already has an owner for this group slug, use it
+		// verbatim to preserve the user's chosen identifier form (UUID or slug).
+		// Only apply when the API-resolved owner and the state owner refer to
+		// the same workspace (one is a UUID, the other is a slug — not two
+		// completely different strings).
+		if prev, ok := prevOwnerBySlug[group.Slug]; ok && prev != "" {
+			apiIsUUID := bitbucketUUIDPattern.MatchString(owner)
+			prevIsUUID := bitbucketUUIDPattern.MatchString(prev)
+			// Preserve state owner when they are different forms of the same
+			// workspace identity (one UUID, one slug). If both are UUIDs or
+			// both are slugs, use the API value as-is.
+			if apiIsUUID != prevIsUUID {
 				owner = prev
 			}
 		}

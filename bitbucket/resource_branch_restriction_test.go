@@ -563,9 +563,52 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			},
 		},
 		{
-			// If prevState has a slug owner and API returns slug, slug is used.
-			// No UUID in prevState → no substitution.
-			"slug in prevState stays slug",
+			// KEY REGRESSION: API returns UUID (owner.uuid populated), but prevState
+			// has slug (written by 2.46.0 or a slug-based config). Preserve slug so
+			// users who configure groups.owner as a workspace slug see no diff.
+			"prevState slug preserved when API returns UUID (sycle-corp case)",
+			[]bitbucket.Group{
+				{
+					Owner:     &bitbucket.Account{Uuid: "{c73001e4-85bf-4fa1-a18e-f02a5fc392c4}", Username: "sycle-corp"},
+					Workspace: &bitbucket.Workspace{Uuid: "{c73001e4-85bf-4fa1-a18e-f02a5fc392c4}", Slug: "sycle-corp"},
+					Slug:      "administrators",
+				},
+			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": "sycle-corp", "slug": "administrators"},
+			}),
+			[]interface{}{
+				map[string]interface{}{"owner": "sycle-corp", "slug": "administrators"},
+			},
+		},
+		{
+			// Same bidirectional logic: multiple groups with slug in prevState,
+			// UUID in API → all preserved as slug.
+			"prevState slug preserved for multiple groups",
+			[]bitbucket.Group{
+				{
+					Owner:     &bitbucket.Account{Uuid: wsUUID, Username: "ws-slug"},
+					Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "ws-slug"},
+					Slug:      "admins",
+				},
+				{
+					Owner:     &bitbucket.Account{Uuid: wsUUID, Username: "ws-slug"},
+					Workspace: &bitbucket.Workspace{Uuid: wsUUID, Slug: "ws-slug"},
+					Slug:      "developers",
+				},
+			},
+			makeGroupsSet([]map[string]interface{}{
+				{"owner": "ws-slug", "slug": "admins"},
+				{"owner": "ws-slug", "slug": "developers"},
+			}),
+			[]interface{}{
+				map[string]interface{}{"owner": "ws-slug", "slug": "admins"},
+				map[string]interface{}{"owner": "ws-slug", "slug": "developers"},
+			},
+		},
+		{
+			// Both API and prevState have slug (same form) → API value used.
+			"slug in prevState, api also slug → no change",
 			[]bitbucket.Group{
 				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "my-group"},
 			},
@@ -577,7 +620,7 @@ func TestFlattenBranchRestrictionGroups(t *testing.T) {
 			},
 		},
 		{
-			// New group (not in prevState): slug is used as-is.
+			// New group (not in prevState): UUID from API is used (best default).
 			"new group not in prevState uses api value",
 			[]bitbucket.Group{
 				{Owner: &bitbucket.Account{Username: "sycle-corp"}, Slug: "new-group"},
