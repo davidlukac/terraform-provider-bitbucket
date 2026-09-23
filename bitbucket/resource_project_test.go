@@ -1,15 +1,84 @@
 package bitbucket
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
+
+// TestProjectWriteBodyJSON validates the core premise of the projectWriteBody workaround:
+// marshaling must NOT include created_on, updated_on, or type fields, which
+// bitbucket-go-client v0.11.0 injects when using bitbucket.Project directly.
+// See: https://github.com/DrFaust92/bitbucket-go-client/issues/41
+func TestProjectWriteBodyJSON(t *testing.T) {
+	t.Run("empty struct omits all fields", func(t *testing.T) {
+		body := &projectWriteBody{}
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		got := string(data)
+		for _, banned := range []string{"created_on", "updated_on", "type"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("field %q must not appear in marshaled output: %s", banned, got)
+			}
+		}
+	})
+
+	t.Run("populated struct contains only writable fields", func(t *testing.T) {
+		body := &projectWriteBody{
+			Name:        "My Project",
+			Key:         "MYPROJ",
+			IsPrivate:   true,
+			Description: "test description",
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		got := string(data)
+
+		// Must not include read-only fields from bitbucket.Project
+		for _, banned := range []string{"created_on", "updated_on", "type"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("field %q must not appear in marshaled output: %s", banned, got)
+			}
+		}
+
+		// Must include the expected writable fields
+		for _, want := range []string{`"name"`, `"key"`, `"is_private"`, `"description"`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("field %s missing from marshaled output: %s", want, got)
+			}
+		}
+	})
+
+	t.Run("is_private false is always serialized", func(t *testing.T) {
+		// is_private has no omitempty: false must be sent explicitly on PUT so that
+		// Bitbucket actually sets the project to public. Without this, a PUT body missing
+		// is_private preserves the existing value, causing a perpetual diff when the user
+		// changes is_private from true to false.
+		body := &projectWriteBody{Name: "Test", Key: "TEST", IsPrivate: false}
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		got := string(data)
+		if !strings.Contains(got, `"is_private"`) {
+			t.Errorf("is_private must always be serialized even when false: %s", got)
+		}
+		if !strings.Contains(got, `"is_private":false`) {
+			t.Errorf("is_private=false must serialize as false, got: %s", got)
+		}
+	})
+}
 
 func TestAccBitbucketProject_basic(t *testing.T) {
 	resourceName := "bitbucket_project.test"

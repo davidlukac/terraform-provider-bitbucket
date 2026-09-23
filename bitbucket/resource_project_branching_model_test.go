@@ -36,6 +36,12 @@ func TestAccBitbucketProjectBranchingModel_basic(t *testing.T) {
 				ImportState:       true,
 				ImportStateVerify: true,
 			},
+			{
+				// Verify no perpetual diff after apply + import.
+				Config:             testAccBitbucketProjectBranchingModelConfig(workspace, rName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
 		},
 	})
 }
@@ -67,6 +73,12 @@ func TestAccBitbucketProjectBranchingModel_production(t *testing.T) {
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
+			},
+			{
+				// Verify no perpetual diff after apply + import.
+				Config:             testAccBitbucketProjectBranchingModelProdConfig(workspace, rName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
 			},
 		},
 	})
@@ -101,8 +113,105 @@ func TestAccBitbucketProjectBranchingModel_branchTypes(t *testing.T) {
 				ImportState:       true,
 				ImportStateVerify: true,
 			},
+			{
+				// Verify no perpetual diff after apply + import.
+				Config:             testAccBitbucketProjectBranchingModelBranchTypesConfig1(workspace, rName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
 		},
 	})
+}
+
+func TestAccBitbucketProjectBranchingModel_defaultBranchDeletion(t *testing.T) {
+	var branchRestriction BranchingModel
+	rName := acctest.RandomWithPrefix("tf-test")
+	workspace := os.Getenv("BITBUCKET_TEAM")
+	resourceName := "bitbucket_project_branching_model.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders, //nolint:staticcheck // pre-existing repo-wide pattern; ProviderFactories migration is out of scope
+		CheckDestroy: testAccCheckBitbucketProjectBranchingModelDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBitbucketProjectBranchingModelDefaultBranchDeletionConfig(workspace, rName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBitbucketProjectBranchingModelExists(resourceName, &branchRestriction),
+					resource.TestCheckResourceAttrPair(resourceName, "project", "bitbucket_project.test", "key"),
+					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "true"),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				// Verify no perpetual diff — exercises the FlexBool read/write round-trip
+				// on the project branching model endpoint.
+				Config:             testAccBitbucketProjectBranchingModelDefaultBranchDeletionConfig(workspace, rName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+			{
+				// Update to false — exercises the false branch of the FlexBool round-trip against
+				// the live API on the project branching model endpoint.
+				Config: testAccBitbucketProjectBranchingModelFalseDefaultBranchDeletionConfig(workspace, rName),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "false"),
+				),
+			},
+			{
+				// PlanOnly after setting false — verifies no perpetual diff on the false value.
+				Config:             testAccBitbucketProjectBranchingModelFalseDefaultBranchDeletionConfig(workspace, rName),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+		},
+	})
+}
+
+func testAccBitbucketProjectBranchingModelDefaultBranchDeletionConfig(workspace, rName string) string {
+	return fmt.Sprintf(`
+resource "bitbucket_project" "test" {
+  owner = %[1]q
+  name  = %[2]q
+  key   = "GGGGG"
+}
+
+resource "bitbucket_project_branching_model" "test" {
+  workspace = %[1]q
+  project   = bitbucket_project.test.key
+
+  default_branch_deletion = true
+
+  development {
+    use_mainbranch = true
+  }
+}
+`, workspace, rName)
+}
+
+func testAccBitbucketProjectBranchingModelFalseDefaultBranchDeletionConfig(workspace, rName string) string {
+	return fmt.Sprintf(`
+resource "bitbucket_project" "test" {
+  owner = %[1]q
+  name  = %[2]q
+  key   = "GGGGG"
+}
+
+resource "bitbucket_project_branching_model" "test" {
+  workspace = %[1]q
+  project   = bitbucket_project.test.key
+
+  default_branch_deletion = false
+
+  development {
+    use_mainbranch = true
+  }
+}
+`, workspace, rName)
 }
 
 func testAccBitbucketProjectBranchingModelConfig(workspace, rName string) string {

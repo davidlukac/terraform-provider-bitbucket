@@ -41,7 +41,12 @@ func (fb FlexBool) MarshalJSON() ([]byte, error) {
 	if fb.Value == nil {
 		return json.Marshal(nil)
 	}
-	return json.Marshal(*fb.Value)
+	// The Bitbucket API only accepts default_branch_deletion as a JSON string
+	// ("true"/"false"), not as a native JSON boolean. Marshal as string to match.
+	if *fb.Value {
+		return json.Marshal("true")
+	}
+	return json.Marshal("false")
 }
 
 // BoolPtr returns the underlying *bool value.
