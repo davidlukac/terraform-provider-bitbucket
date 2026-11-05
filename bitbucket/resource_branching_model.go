@@ -133,6 +133,7 @@ func resourceBranchingModel() *schema.Resource {
 			"production": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Computed: true, // The API always returns a production block, even when not configured.
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -147,14 +148,17 @@ func resourceBranchingModel() *schema.Resource {
 						"use_mainbranch": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 						"branch_does_not_exist": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 						"enabled": {
 							Type:     schema.TypeBool,
 							Optional: true,
+							Computed: true,
 						},
 					},
 				},
