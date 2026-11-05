@@ -2,133 +2,42 @@ package bitbucket
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-func TestFlexBool_UnmarshalJSON_BoolTrue(t *testing.T) {
-	input := []byte(`{"default_branch_deletion": true}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
+func TestFlexBoolUnmarshal(t *testing.T) {
+	cases := map[string]*bool{
+		`{"default_branch_deletion": "true"}`:  new(true),
+		`{"default_branch_deletion": "false"}`: new(false),
+		`{"default_branch_deletion": true}`:    new(true),
+		`{"default_branch_deletion": false}`:   new(false),
+		`{"default_branch_deletion": null}`:    nil,
+		`{}`:                                   nil,
 	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for in, want := range cases {
+		var m BranchingModel
+		if err := json.Unmarshal([]byte(in), &m); err != nil {
+			t.Fatalf("%s: %s", in, err)
+		}
+		got := m.DefaultBranchDeletion
+		if (got == nil) != (want == nil) || (got != nil && bool(*got) != *want) {
+			t.Fatalf("%s: got %v, want %v", in, got, want)
+		}
 	}
-	if result.DefaultBranchDeletion == nil || result.DefaultBranchDeletion.Value == nil {
-		t.Fatal("expected non-nil value")
-	}
-	if *result.DefaultBranchDeletion.Value != true {
-		t.Fatalf("expected true, got %v", *result.DefaultBranchDeletion.Value)
+
+	var m BranchingModel
+	if err := json.Unmarshal([]byte(`{"default_branch_deletion": "maybe"}`), &m); err == nil {
+		t.Fatal("expected an error for a non-boolean string")
 	}
 }
 
-func TestFlexBool_UnmarshalJSON_BoolFalse(t *testing.T) {
-	input := []byte(`{"default_branch_deletion": false}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
+func TestFlexBoolMarshalsAsString(t *testing.T) {
+	out, err := json.Marshal(BranchingModel{DefaultBranchDeletion: new(flexBool(true))})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DefaultBranchDeletion == nil || result.DefaultBranchDeletion.Value == nil {
-		t.Fatal("expected non-nil value")
-	}
-	if *result.DefaultBranchDeletion.Value != false {
-		t.Fatalf("expected false, got %v", *result.DefaultBranchDeletion.Value)
-	}
-}
-
-func TestFlexBool_UnmarshalJSON_StringTrue(t *testing.T) {
-	input := []byte(`{"default_branch_deletion": "true"}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
-	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DefaultBranchDeletion == nil || result.DefaultBranchDeletion.Value == nil {
-		t.Fatal("expected non-nil value")
-	}
-	if *result.DefaultBranchDeletion.Value != true {
-		t.Fatalf("expected true, got %v", *result.DefaultBranchDeletion.Value)
-	}
-}
-
-func TestFlexBool_UnmarshalJSON_StringFalse(t *testing.T) {
-	input := []byte(`{"default_branch_deletion": "false"}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
-	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DefaultBranchDeletion == nil || result.DefaultBranchDeletion.Value == nil {
-		t.Fatal("expected non-nil value")
-	}
-	if *result.DefaultBranchDeletion.Value != false {
-		t.Fatalf("expected false, got %v", *result.DefaultBranchDeletion.Value)
-	}
-}
-
-func TestFlexBool_UnmarshalJSON_Null(t *testing.T) {
-	input := []byte(`{"default_branch_deletion": null}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
-	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DefaultBranchDeletion == nil {
-		// json.Unmarshal with null sets the pointer to nil
-		return
-	}
-	if result.DefaultBranchDeletion.Value != nil {
-		t.Fatalf("expected nil value, got %v", *result.DefaultBranchDeletion.Value)
-	}
-}
-
-func TestFlexBool_UnmarshalJSON_Absent(t *testing.T) {
-	input := []byte(`{}`)
-	var result struct {
-		DefaultBranchDeletion *FlexBool `json:"default_branch_deletion"`
-	}
-	if err := json.Unmarshal(input, &result); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DefaultBranchDeletion != nil {
-		t.Fatalf("expected nil, got %v", result.DefaultBranchDeletion)
-	}
-}
-
-func TestFlexBool_MarshalJSON(t *testing.T) {
-	trueVal := true
-	falseVal := false
-	tests := []struct {
-		name     string
-		fb       FlexBool
-		expected string
-	}{
-		// The Bitbucket API requires string representation ("true"/"false"),
-		// not native JSON booleans, for default_branch_deletion on write.
-		{name: "true", fb: FlexBool{Value: &trueVal}, expected: `"true"`},
-		{name: "false", fb: FlexBool{Value: &falseVal}, expected: `"false"`},
-		{name: "nil", fb: FlexBool{Value: nil}, expected: "null"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			data, err := json.Marshal(tc.fb)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if string(data) != tc.expected {
-				t.Fatalf("expected %s, got %s", tc.expected, string(data))
-			}
-		})
-	}
-}
-
-func TestFlexBool_BoolPtr_Nil(t *testing.T) {
-	var fb *FlexBool
-	if fb.BoolPtr() != nil {
-		t.Fatal("expected nil")
+	if want := `"default_branch_deletion":"true"`; !json.Valid(out) || !strings.Contains(string(out), want) {
+		t.Fatalf("got %s, want it to contain %s", out, want)
 	}
 }

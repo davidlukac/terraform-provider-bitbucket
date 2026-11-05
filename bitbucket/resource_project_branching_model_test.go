@@ -148,14 +148,14 @@ func TestAccBitbucketProjectBranchingModel_defaultBranchDeletion(t *testing.T) {
 				ImportStateVerify: true,
 			},
 			{
-				// Verify no perpetual diff — exercises the FlexBool read/write round-trip
+				// Verify no perpetual diff — exercises the bool/string read/write round-trip
 				// on the project branching model endpoint.
 				Config:             testAccBitbucketProjectBranchingModelDefaultBranchDeletionConfig(workspace, rName),
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: false,
 			},
 			{
-				// Update to false — exercises the false branch of the FlexBool round-trip against
+				// Update to false — exercises the false branch of the bool/string round-trip against
 				// the live API on the project branching model endpoint.
 				Config: testAccBitbucketProjectBranchingModelFalseDefaultBranchDeletionConfig(workspace, rName),
 				Check: resource.ComposeTestCheckFunc(

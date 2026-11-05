@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -20,7 +21,26 @@ type BranchingModel struct {
 	Development           *BranchModel  `json:"development,omitempty"`
 	Production            *BranchModel  `json:"production,omitempty"`
 	BranchTypes           []*BranchType `json:"branch_types"`
-	DefaultBranchDeletion *FlexBool     `json:"default_branch_deletion,omitempty"`
+	DefaultBranchDeletion *flexBool     `json:"default_branch_deletion,omitempty"`
+}
+
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	*b = flexBool(v)
+	return nil
+}
+
+func (b flexBool) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatBool(bool(b)))
 }
 
 type BranchModel struct {
@@ -113,7 +133,6 @@ func resourceBranchingModel() *schema.Resource {
 			"production": {
 				Type:     schema.TypeList,
 				Optional: true,
-				Computed: true, // The API always returns a production block, even when not configured.
 				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -128,17 +147,14 @@ func resourceBranchingModel() *schema.Resource {
 						"use_mainbranch": {
 							Type:     schema.TypeBool,
 							Optional: true,
-							Computed: true,
 						},
 						"branch_does_not_exist": {
 							Type:     schema.TypeBool,
 							Optional: true,
-							Computed: true,
 						},
 						"enabled": {
 							Type:     schema.TypeBool,
 							Optional: true,
-							Computed: true,
 						},
 					},
 				},
@@ -193,12 +209,16 @@ func resourceBranchingModelsRead(ctx context.Context, d *schema.ResourceData, m 
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	branchingModelsReq, _ := client.Get(fmt.Sprintf("2.0/repositories/%s/%s/branching-model/settings", owner, repo))
+	branchingModelsReq, err := client.Get(fmt.Sprintf("2.0/repositories/%s/%s/branching-model/settings", owner, repo))
 
-	if branchingModelsReq.StatusCode == http.StatusNotFound {
+	if branchingModelsReq != nil && branchingModelsReq.StatusCode == http.StatusNotFound {
 		log.Printf("[WARN] Branching Model (%s) not found, removing from state", d.Id())
 		d.SetId("")
 		return nil
+	}
+
+	if err != nil {
+		return diag.FromErr(err)
 	}
 
 	if branchingModelsReq.Body == nil {
@@ -230,10 +250,14 @@ func resourceBranchingModelsRead(ctx context.Context, d *schema.ResourceData, m 
 
 	d.Set("owner", owner)
 	d.Set("repository", repo)
-	d.Set("default_branch_deletion", branchingModel.DefaultBranchDeletion.BoolPtr())
+	if v := branchingModel.DefaultBranchDeletion; v != nil {
+		d.Set("default_branch_deletion", bool(*v))
+	} else {
+		d.Set("default_branch_deletion", nil)
+	}
 	d.Set("development", flattenBranchModel(branchingModel.Development, "development"))
 	d.Set("branch_type", flattenBranchTypes(branchingModel.BranchTypes))
-	d.Set("production", flattenBranchModel(branchingModel.Production, "production"))
+	d.Set("production", flattenProductionBranchModel(d, branchingModel.Production))
 
 	return nil
 }
@@ -274,8 +298,7 @@ func expandBranchingModel(d *schema.ResourceData) *BranchingModel {
 
 	//nolint:staticcheck
 	if v, ok := d.GetOkExists("default_branch_deletion"); ok {
-		val := v.(bool)
-		model.DefaultBranchDeletion = &FlexBool{Value: &val}
+		model.DefaultBranchDeletion = new(flexBool(v.(bool)))
 	}
 
 	return model
@@ -383,7 +406,11 @@ func flattenBranchTypes(branchTypes []*BranchType) []interface{} {
 			continue
 		}
 
-		enabled := btRaw.Enabled != nil && *btRaw.Enabled
+		enabled := false
+		if btRaw.Enabled != nil {
+			enabled = *btRaw.Enabled
+		}
+
 		branchType := map[string]interface{}{
 			"kind":    btRaw.Kind,
 			"prefix":  btRaw.Prefix,
@@ -404,4 +431,11 @@ func branchingModelId(id string) (string, string, error) {
 	}
 
 	return parts[0], parts[1], nil
+}
+
+func flattenProductionBranchModel(d *schema.ResourceData, rp *BranchModel) []interface{} {
+	if rp != nil && !rp.Enabled && len(d.Get("production").([]interface{})) == 0 {
+		return []interface{}{}
+	}
+	return flattenBranchModel(rp, "production")
 }

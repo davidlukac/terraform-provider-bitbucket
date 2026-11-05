@@ -1,10 +1,10 @@
 package bitbucket
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -12,73 +12,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 )
-
-// TestProjectWriteBodyJSON validates the core premise of the projectWriteBody workaround:
-// marshaling must NOT include created_on, updated_on, or type fields, which
-// bitbucket-go-client v0.11.0 injects when using bitbucket.Project directly.
-// See: https://github.com/DrFaust92/bitbucket-go-client/issues/41
-func TestProjectWriteBodyJSON(t *testing.T) {
-	t.Run("empty struct omits all fields", func(t *testing.T) {
-		body := &projectWriteBody{}
-		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal error: %v", err)
-		}
-		got := string(data)
-		for _, banned := range []string{"created_on", "updated_on", "type"} {
-			if strings.Contains(got, banned) {
-				t.Errorf("field %q must not appear in marshaled output: %s", banned, got)
-			}
-		}
-	})
-
-	t.Run("populated struct contains only writable fields", func(t *testing.T) {
-		body := &projectWriteBody{
-			Name:        "My Project",
-			Key:         "MYPROJ",
-			IsPrivate:   true,
-			Description: "test description",
-		}
-		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal error: %v", err)
-		}
-		got := string(data)
-
-		// Must not include read-only fields from bitbucket.Project
-		for _, banned := range []string{"created_on", "updated_on", "type"} {
-			if strings.Contains(got, banned) {
-				t.Errorf("field %q must not appear in marshaled output: %s", banned, got)
-			}
-		}
-
-		// Must include the expected writable fields
-		for _, want := range []string{`"name"`, `"key"`, `"is_private"`, `"description"`} {
-			if !strings.Contains(got, want) {
-				t.Errorf("field %s missing from marshaled output: %s", want, got)
-			}
-		}
-	})
-
-	t.Run("is_private false is always serialized", func(t *testing.T) {
-		// is_private has no omitempty: false must be sent explicitly on PUT so that
-		// Bitbucket actually sets the project to public. Without this, a PUT body missing
-		// is_private preserves the existing value, causing a perpetual diff when the user
-		// changes is_private from true to false.
-		body := &projectWriteBody{Name: "Test", Key: "TEST", IsPrivate: false}
-		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal error: %v", err)
-		}
-		got := string(data)
-		if !strings.Contains(got, `"is_private"`) {
-			t.Errorf("is_private must always be serialized even when false: %s", got)
-		}
-		if !strings.Contains(got, `"is_private":false`) {
-			t.Errorf("is_private=false must serialize as false, got: %s", got)
-		}
-	})
-}
 
 func TestAccBitbucketProject_basic(t *testing.T) {
 	resourceName := "bitbucket_project.test"
@@ -189,7 +122,7 @@ resource "bitbucket_project" "test" {
 
   link {
     avatar {
-      href = "https://d301sr5gafysq2.cloudfront.net/dfb18959be9c/img/repo-avatars/python.png"
+      href = "https://github.githubassets.com/favicons/favicon.png"
 	}
   }
 }
@@ -227,6 +160,65 @@ func testAccCheckBitbucketProjectExists(n string) resource.TestCheckFunc {
 		}
 		if rs.Primary.ID == "" {
 			return fmt.Errorf("No project ID is set")
+		}
+		return nil
+	}
+}
+
+func TestAccBitbucketProject_renameKey(t *testing.T) {
+	resourceName := "bitbucket_project.test"
+	testTeam := os.Getenv("BITBUCKET_TEAM")
+	rName := acctest.RandomWithPrefix("tf-test")
+	key1 := "TF" + strings.ToUpper(acctest.RandString(6))
+	key2 := "TF" + strings.ToUpper(acctest.RandString(6))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckBitbucketProjectDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBitbucketProjectKeyConfig(testTeam, rName, key1),
+				Check:  resource.TestCheckResourceAttr(resourceName, "key", key1),
+			},
+			{
+				Config: testAccBitbucketProjectKeyConfig(testTeam, rName, key2),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(resourceName, "key", key2),
+					resource.TestCheckResourceAttr(resourceName, "id", testTeam+"/"+key2),
+					testAccCheckBitbucketProjectGone(testTeam, key1),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config:      testAccBitbucketProjectKeyConfig(testTeam+"-other", rName, key2),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`changing owner from .* is not supported`),
+			},
+		},
+	})
+}
+
+func testAccBitbucketProjectKeyConfig(team, rName, key string) string {
+	return fmt.Sprintf(`
+resource "bitbucket_project" "test" {
+  owner = %[1]q
+  name  = %[2]q
+  key   = %[3]q
+}
+`, team, rName, key)
+}
+
+func testAccCheckBitbucketProjectGone(team, key string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		c := testAccProvider.Meta().(Clients).genClient
+		_, res, _ := c.ApiClient.ProjectsApi.WorkspacesWorkspaceProjectsProjectKeyGet(c.AuthContext, key, team)
+		if res == nil || res.StatusCode != http.StatusNotFound {
+			return fmt.Errorf("project %s/%s still exists after key change", team, key)
 		}
 		return nil
 	}

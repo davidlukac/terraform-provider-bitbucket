@@ -1,3 +1,9 @@
+## Unreleased
+
+### Features
+
+* `bitbucket_project_branching_model`: add `default_branch_deletion` argument, for parity with `bitbucket_branching_model`.
+
 ## 1.3.0 (March 15, 2021)
 
 This release contains the changes to upstream repo that were never released.

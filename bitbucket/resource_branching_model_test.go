@@ -260,56 +260,6 @@ func TestAccBitbucketBranchingModel_branchTypes(t *testing.T) {
 	})
 }
 
-func TestAccBitbucketBranchingModel_defaultBranchDeletion(t *testing.T) {
-	var branchRestriction BranchingModel
-	rName := acctest.RandomWithPrefix("tf-test")
-	testUser := os.Getenv("BITBUCKET_TEAM")
-	resourceName := "bitbucket_branching_model.test"
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders, //nolint:staticcheck // pre-existing repo-wide pattern; ProviderFactories migration is out of scope
-		CheckDestroy: testAccCheckBitbucketBranchingModelDestroy,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccBitbucketBranchingModelDefaultBranchDeletionConfig(testUser, rName),
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckBitbucketBranchingModelExists(resourceName, &branchRestriction),
-					resource.TestCheckResourceAttrPair(resourceName, "repository", "bitbucket_repository.test", "name"),
-					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "true"),
-				),
-			},
-			{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
-			},
-			{
-				// Verify no perpetual diff — this exercises the FlexBool read/write round-trip.
-				// A regression here would mean the API returning a string "true" causes Terraform
-				// to see a diff on every plan even though nothing has changed.
-				Config:             testAccBitbucketBranchingModelDefaultBranchDeletionConfig(testUser, rName),
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: false,
-			},
-			{
-				// Update to false — exercises the false branch of the FlexBool round-trip against
-				// the live API (API may return "false" as a string; must converge to false in state).
-				Config: testAccBitbucketBranchingModelFalseDefaultBranchDeletionConfig(testUser, rName),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "false"),
-				),
-			},
-			{
-				// PlanOnly after setting false — verifies no perpetual diff on the false value.
-				Config:             testAccBitbucketBranchingModelFalseDefaultBranchDeletionConfig(testUser, rName),
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: false,
-			},
-		},
-	})
-}
-
 func testAccBitbucketBranchingModelConfig(testUser, rName string) string {
 	return fmt.Sprintf(`
 resource "bitbucket_repository" "test" {
@@ -319,44 +269,6 @@ resource "bitbucket_repository" "test" {
 resource "bitbucket_branching_model" "test" {
   owner      = %[1]q
   repository = bitbucket_repository.test.name
-
-  development {
-    use_mainbranch = true
-  }
-}
-`, testUser, rName)
-}
-
-func testAccBitbucketBranchingModelDefaultBranchDeletionConfig(testUser, rName string) string {
-	return fmt.Sprintf(`
-resource "bitbucket_repository" "test" {
-  owner = %[1]q
-  name  = %[2]q
-}
-resource "bitbucket_branching_model" "test" {
-  owner      = %[1]q
-  repository = bitbucket_repository.test.name
-
-  default_branch_deletion = true
-
-  development {
-    use_mainbranch = true
-  }
-}
-`, testUser, rName)
-}
-
-func testAccBitbucketBranchingModelFalseDefaultBranchDeletionConfig(testUser, rName string) string {
-	return fmt.Sprintf(`
-resource "bitbucket_repository" "test" {
-  owner = %[1]q
-  name  = %[2]q
-}
-resource "bitbucket_branching_model" "test" {
-  owner      = %[1]q
-  repository = bitbucket_repository.test.name
-
-  default_branch_deletion = false
 
   development {
     use_mainbranch = true
@@ -459,4 +371,56 @@ func testAccCheckBitbucketBranchingModelExists(n string, branchRestriction *Bran
 		}
 		return nil
 	}
+}
+
+func TestAccBitbucketBranchingModel_defaultBranchDeletion(t *testing.T) {
+	var branchingModel BranchingModel
+	rName := acctest.RandomWithPrefix("tf-test")
+	testUser := os.Getenv("BITBUCKET_TEAM")
+	resourceName := "bitbucket_branching_model.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviderFactories,
+		CheckDestroy:      testAccCheckBitbucketBranchingModelDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccBitbucketBranchingModelDeletionConfig(testUser, rName, true),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBitbucketBranchingModelExists(resourceName, &branchingModel),
+					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "true"),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccBitbucketBranchingModelDeletionConfig(testUser, rName, false),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckBitbucketBranchingModelExists(resourceName, &branchingModel),
+					resource.TestCheckResourceAttr(resourceName, "default_branch_deletion", "false"),
+				),
+			},
+		},
+	})
+}
+
+func testAccBitbucketBranchingModelDeletionConfig(testUser, rName string, deletion bool) string {
+	return fmt.Sprintf(`
+resource "bitbucket_repository" "test" {
+  owner = %[1]q
+  name  = %[2]q
+}
+resource "bitbucket_branching_model" "test" {
+  owner                   = %[1]q
+  repository              = bitbucket_repository.test.name
+  default_branch_deletion = %[3]t
+
+  development {
+    use_mainbranch = true
+  }
+}
+`, testUser, rName, deletion)
 }

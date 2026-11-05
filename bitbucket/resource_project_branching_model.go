@@ -168,12 +168,16 @@ func resourceProjectBranchingModelsRead(ctx context.Context, d *schema.ResourceD
 	if err != nil {
 		return diag.FromErr(err)
 	}
-	branchingModelsReq, _ := client.Get(fmt.Sprintf("2.0/workspaces/%s/projects/%s/branching-model/settings", workspace, repo))
+	branchingModelsReq, err := client.Get(fmt.Sprintf("2.0/workspaces/%s/projects/%s/branching-model/settings", workspace, repo))
 
-	if branchingModelsReq.StatusCode == http.StatusNotFound {
+	if branchingModelsReq != nil && branchingModelsReq.StatusCode == http.StatusNotFound {
 		log.Printf("[WARN] Project Branching Model (%s) not found, removing from state", d.Id())
 		d.SetId("")
 		return nil
+	}
+
+	if err != nil {
+		return diag.FromErr(err)
 	}
 
 	if branchingModelsReq.Body == nil {
@@ -205,10 +209,14 @@ func resourceProjectBranchingModelsRead(ctx context.Context, d *schema.ResourceD
 
 	d.Set("workspace", workspace)
 	d.Set("project", repo)
-	d.Set("default_branch_deletion", branchingModel.DefaultBranchDeletion.BoolPtr())
+	if v := branchingModel.DefaultBranchDeletion; v != nil {
+		d.Set("default_branch_deletion", bool(*v))
+	} else {
+		d.Set("default_branch_deletion", nil)
+	}
 	d.Set("development", flattenBranchModel(branchingModel.Development, "development"))
 	d.Set("branch_type", flattenBranchTypes(branchingModel.BranchTypes))
-	d.Set("production", flattenBranchModel(branchingModel.Production, "production"))
+	d.Set("production", flattenProductionBranchModel(d, branchingModel.Production))
 
 	return nil
 }
