@@ -2,7 +2,7 @@
 
 ### Features
 
-* `bitbucket_project_branching_model`: add `default_branch_deletion` argument, for parity with `bitbucket_branching_model`.
+* `bitbucket_project_branching_model`: add `default_branch_deletion` argument. [#263](https://github.com/DrFaust92/terraform-provider-bitbucket/pull/263) fixed this for `bitbucket_branching_model` (repo-level) and closed [#234](https://github.com/DrFaust92/terraform-provider-bitbucket/issues/234), but `bitbucket_project_branching_model` (project-level) — also reported in that issue — was left without the field entirely, so it would still fail to unmarshal `default_branch_deletion` from the API. This completes the fix for both resources.
 
 ## 1.3.0 (March 15, 2021)
 
